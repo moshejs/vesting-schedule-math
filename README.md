@@ -30,7 +30,9 @@ accelerate({ grant, asOf: "2028-01-15", acceleration: 0.5 });
 - **`vestedShares(grant, asOf)`** / **`unvestedShares(grant, asOf)`**.
 - **`accelerate({ grant, asOf, acceleration })`** — `acceleration` is a fraction of unvested (`1` = full trigger, `0.5` = half) or `{ months: n }` to pull the schedule forward n months.
 
-Conventions: months clamp to month-end (Jan 31 → Feb 28/29); every tranche is a whole number of shares, rounded down against exact linear accrual, with the final tranche truing up — the invariant `sum(tranches) === grant.shares` always holds. Invalid inputs throw `RangeError`.
+Conventions: months clamp to month-end (Jan 31 → Feb 28/29); every tranche is a whole number of shares, rounded down against exact linear accrual, with the final tranche truing up — the invariant `sum(tranches) === grant.shares` always holds. All rounding is done in exact integer arithmetic (cumulative vested = `floor(shares × months / totalMonths)`), so there are no off-by-one-share floating-point errors; fractional acceleration is likewise floored (`floor(unvested × fraction)`). Invalid inputs throw `RangeError`, including share counts where `shares × totalMonths` exceeds `Number.MAX_SAFE_INTEGER`.
+
+Not modeled: early exercise / repurchase, performance-based vesting, and leave-of-absence pauses.
 
 ## Related
 

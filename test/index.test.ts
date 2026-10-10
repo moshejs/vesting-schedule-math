@@ -5,6 +5,7 @@ import {
   vestedShares,
   vestingSchedule,
 } from "../src/index.js";
+import { CASES } from "./fixtures.js";
 
 const STANDARD = { shares: 4800, startDate: "2026-01-15", totalMonths: 48, cliffMonths: 12 };
 
@@ -156,5 +157,43 @@ describe("validation", () => {
     expect(() =>
       vestingSchedule({ shares: 100, startDate: "2026-01-01", totalMonths: 48, cliffMonths: 60 }),
     ).toThrow();
+  });
+});
+
+describe("floating-point exactness (regressions)", () => {
+  it("floors exact integer accrual correctly (84 shares / 60 months, month 45 = 63)", () => {
+    // 84/60 × 45 evaluates to 62.99999999999999 in floating point.
+    const s = vestingSchedule({ shares: 84, startDate: "2026-01-01", totalMonths: 60 });
+    expect(s[44]!.cumulative).toBe(63);
+  });
+
+  it("does not lose a share on decimal acceleration fractions (800 × 0.29 = 232)", () => {
+    const grant = { shares: 4800, startDate: "2026-01-01", totalMonths: 48 };
+    const r = accelerate({ grant, asOf: "2029-05-01", acceleration: 0.29 });
+    expect(r.vestedBefore).toBe(4000);
+    expect(r.accelerated).toBe(232);
+  });
+
+  it("rejects share counts too large for exact integer math", () => {
+    expect(() =>
+      vestingSchedule({ shares: Number.MAX_SAFE_INTEGER, startDate: "2026-01-01", totalMonths: 48 }),
+    ).toThrow(RangeError);
+  });
+
+  it("validates dates in years 0–99 without Date.UTC's 19xx remapping", () => {
+    expect(() => vestingSchedule({ shares: 12, startDate: "0004-02-29", totalMonths: 12 })).not.toThrow();
+    expect(() => vestingSchedule({ shares: 12, startDate: "0100-02-29", totalMonths: 12 })).toThrow(RangeError);
+  });
+});
+
+describe("independent reference fixtures (python-dateutil + exact rationals)", () => {
+  it.each(CASES.map((c, i) => [i, c] as const))("case %i", (_i, c) => {
+    const s = vestingSchedule(c.grant).map((t) => [t.date, t.shares, t.cumulative, t.isCliff]);
+    expect(s).toEqual(c.schedule);
+    for (const [asOf, vested] of c.probes) expect(vestedShares(c.grant, asOf)).toBe(vested);
+    for (const [asOf, frac, months, want] of c.accel) {
+      const r = accelerate({ grant: c.grant, asOf, acceleration: frac !== null ? frac : { months: months! } });
+      expect(r.accelerated).toBe(want);
+    }
   });
 });

@@ -48,15 +48,16 @@ function toYMD(input: string, label: string): YMD {
   const m = DATE_RE.exec(input);
   if (!m) throw new RangeError(`Invalid ${label}: "${input}" (expected YYYY-MM-DD)`);
   const ymd = { y: Number(m[1]), m: Number(m[2]), d: Number(m[3]) };
-  const check = new Date(Date.UTC(ymd.y, ymd.m - 1, ymd.d));
-  if (
-    check.getUTCFullYear() !== ymd.y ||
-    check.getUTCMonth() + 1 !== ymd.m ||
-    check.getUTCDate() !== ymd.d
-  ) {
+  if (ymd.m < 1 || ymd.m > 12 || ymd.d < 1 || ymd.d > daysInMonth(ymd.y, ymd.m)) {
     throw new RangeError(`Invalid calendar date for ${label}: "${input}"`);
   }
   return ymd;
+}
+
+/** Proleptic Gregorian month length (arithmetic, so years 0–99 aren't remapped to 19xx by Date.UTC). */
+function daysInMonth(y: number, m: number): number {
+  if (m === 2) return (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0 ? 29 : 28;
+  return m === 4 || m === 6 || m === 9 || m === 11 ? 30 : 31;
 }
 
 function iso(a: YMD): string {
@@ -68,15 +69,17 @@ function addMonthsClamped(a: YMD, months: number): YMD {
   const total = a.y * 12 + (a.m - 1) + months;
   const y = Math.floor(total / 12);
   const m = (total % 12) + 1;
-  const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
-  return { y, m, d: Math.min(a.d, lastDay) };
+  return { y, m, d: Math.min(a.d, daysInMonth(y, m)) };
 }
 
 const FREQ_MONTHS: Record<Frequency, number> = { monthly: 1, quarterly: 3, annual: 12 };
 
 function validate(grant: VestingGrant): { cliff: number; freq: number } {
-  if (!Number.isInteger(grant.shares) || grant.shares <= 0) {
-    throw new RangeError(`shares must be a positive integer, got ${grant.shares}`);
+  if (!Number.isSafeInteger(grant.shares) || grant.shares <= 0) {
+    throw new RangeError(`shares must be a positive (safe) integer, got ${grant.shares}`);
+  }
+  if (grant.shares * grant.totalMonths > Number.MAX_SAFE_INTEGER) {
+    throw new RangeError(`shares × totalMonths exceeds Number.MAX_SAFE_INTEGER; exact rounding is not possible`);
   }
   if (!Number.isInteger(grant.totalMonths) || grant.totalMonths <= 0) {
     throw new RangeError(`totalMonths must be a positive integer, got ${grant.totalMonths}`);
@@ -110,17 +113,19 @@ function validate(grant: VestingGrant): { cliff: number; freq: number } {
 export function vestingSchedule(grant: VestingGrant): Tranche[] {
   const { cliff, freq } = validate(grant);
   const start = toYMD(grant.startDate, "startDate");
-  const perMonth = grant.shares / grant.totalMonths;
 
   const tranches: Tranche[] = [];
   let cumulative = 0;
 
   const pushTranche = (monthsElapsed: number, isCliff: boolean) => {
     // Exact accrual through monthsElapsed, floored; tranche = accrual − already vested.
+    // Multiply before dividing: shares × months is an exact integer, so the
+    // floor is exact (floor(shares/total × months) is not — 84/60 × 45
+    // evaluates to 62.99999999999999).
     const accrued =
       monthsElapsed >= grant.totalMonths
         ? grant.shares
-        : Math.floor(perMonth * monthsElapsed);
+        : Math.floor((grant.shares * monthsElapsed) / grant.totalMonths);
     const shares = accrued - cumulative;
     cumulative = accrued;
     tranches.push({ date: iso(addMonthsClamped(start, monthsElapsed)), shares, cumulative, isCliff });
@@ -192,7 +197,10 @@ export function accelerate(params: AccelerationParams): AccelerationResult {
     if (!(acceleration >= 0 && acceleration <= 1)) {
       throw new RangeError(`acceleration fraction must be in [0,1], got ${acceleration}`);
     }
-    accelerated = Math.floor(unvested * acceleration);
+    // Floor with a relative tolerance so decimal fractions that aren't exact
+    // in binary don't lose a share (800 × 0.29 evaluates to 231.99999999999997).
+    const exact = unvested * acceleration;
+    accelerated = Math.min(unvested, Math.floor(exact + exact * 1e-12));
   } else {
     const months = acceleration.months;
     if (!Number.isInteger(months) || months < 0) {
